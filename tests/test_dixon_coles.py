@@ -1,8 +1,29 @@
 import numpy as np
+import pandas as pd
 import pytest
 from scipy.stats import poisson
 
-from src.dixon_coles import outcome_probs, score_matrix, tau
+from src.dixon_coles import fit, outcome_probs, score_matrix, tau, time_weights
+
+XI = np.log(2) / 365
+TRUE_ATTACK = {"A": 0.4, "B": 0.2, "C": 0.0, "D": -0.2, "E": -0.4}
+TRUE_DEFENCE = {"A": -0.3, "B": -0.1, "C": 0.0, "D": 0.1, "E": 0.3}
+TRUE_HOME_ADVANTAGE = 0.25
+
+
+def simulate_matches(seed: int = 0, rounds: int = 60) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    rows = []
+    for r in range(rounds):
+        for home in TRUE_ATTACK:
+            for away in TRUE_ATTACK:
+                if home == away:
+                    continue
+                lam = np.exp(TRUE_ATTACK[home] + TRUE_DEFENCE[away] + TRUE_HOME_ADVANTAGE)
+                mu = np.exp(TRUE_ATTACK[away] + TRUE_DEFENCE[home])
+                rows.append((pd.Timestamp("2020-01-01") + pd.Timedelta(days=r), home, away,
+                             rng.poisson(lam), rng.poisson(mu)))
+    return pd.DataFrame(rows, columns=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"])
 
 
 def test_tau_hand_values():
@@ -50,3 +71,38 @@ def test_stronger_away_team_is_favourite():
     home, draw, away = outcome_probs(score_matrix(0.64, 2.01, -0.1))
     assert home + draw + away == pytest.approx(1.0)
     assert away > draw > home
+
+
+def test_time_weights_hand_values():
+    dates = pd.Series(pd.to_datetime(["2024-01-01", "2023-01-01"]))
+    weights = time_weights(dates, pd.Timestamp("2024-01-01"), XI)
+    assert weights[0] == pytest.approx(1.0)  # même jour
+    assert weights[1] == pytest.approx(0.5)  # 365 jours = une demi-vie
+
+
+def test_fit_recovers_simulated_parameters():
+    params = fit(simulate_matches(), pd.Timestamp("2021-01-01"), xi=0.0)
+    teams = list(TRUE_ATTACK)
+    assert sorted(teams, key=params["attack"].get) == sorted(teams, key=TRUE_ATTACK.get)
+    assert sorted(teams, key=params["defence"].get) == sorted(teams, key=TRUE_DEFENCE.get)
+    assert params["home_advantage"] == pytest.approx(TRUE_HOME_ADVANTAGE, abs=0.1)
+    assert params["rho"] == pytest.approx(0.0, abs=0.1)  # données simulées sans corrélation
+
+
+def test_fit_attacks_are_centered():
+    params = fit(simulate_matches(), pd.Timestamp("2021-01-01"), xi=XI)
+    assert np.mean(list(params["attack"].values())) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_fit_ignores_matches_from_ref_date_onwards():
+    matches = simulate_matches()
+    ref_date = pd.Timestamp("2020-02-15")
+    # Un match le jour même et un après, avec des scores absurdes : ils ne doivent rien changer.
+    leak = pd.DataFrame({
+        "Date": [ref_date, ref_date + pd.Timedelta(days=1)],
+        "HomeTeam": ["A", "E"], "AwayTeam": ["E", "A"], "FTHG": [9, 9], "FTAG": [0, 0],
+    })
+    clean = fit(matches[matches["Date"] < ref_date], ref_date, XI)
+    with_future = fit(pd.concat([matches, leak], ignore_index=True), ref_date, XI)
+    assert with_future["home_advantage"] == pytest.approx(clean["home_advantage"])
+    assert with_future["attack"] == pytest.approx(clean["attack"])
