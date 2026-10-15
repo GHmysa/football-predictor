@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 from scipy.stats import poisson
 
-from src.dixon_coles import fit, outcome_probs, score_matrix, tau, time_weights
+from src.dixon_coles import fit, outcome_probs, predict, score_matrix, tau, time_weights
 
 XI = np.log(2) / 365
 TRUE_ATTACK = {"A": 0.4, "B": 0.2, "C": 0.0, "D": -0.2, "E": -0.4}
@@ -106,3 +106,30 @@ def test_fit_ignores_matches_from_ref_date_onwards():
     with_future = fit(pd.concat([matches, leak], ignore_index=True), ref_date, XI)
     assert with_future["home_advantage"] == pytest.approx(clean["home_advantage"])
     assert with_future["attack"] == pytest.approx(clean["attack"])
+
+
+PARAMS = {
+    "attack": {"A": 0.5, "B": -0.5},
+    "defence": {"A": -0.1, "B": 0.3},
+    "home_advantage": 0.25,
+    "rho": -0.1,
+}
+
+
+def test_predict_hand_values():
+    # λ = exp(0.5 + 0.3 + 0.25), μ = exp(-0.5 + -0.1)
+    expected = outcome_probs(score_matrix(np.exp(1.05), np.exp(-0.6), -0.1))
+    assert predict(PARAMS, "A", "B") == pytest.approx(expected)
+    assert sum(predict(PARAMS, "A", "B")) == pytest.approx(1.0)
+
+
+def test_predict_unknown_team_gets_average_parameters():
+    # Défense moyenne = (-0.1 + 0.3) / 2 = 0.1 ; attaque moyenne = 0.
+    explicit = {
+        "attack": {**PARAMS["attack"], "Promu": 0.0},
+        "defence": {**PARAMS["defence"], "Promu": 0.1},
+        "home_advantage": 0.25,
+        "rho": -0.1,
+    }
+    assert predict(PARAMS, "A", "Promu") == pytest.approx(predict(explicit, "A", "Promu"))
+    assert predict(PARAMS, "Promu", "B") == pytest.approx(predict(explicit, "Promu", "B"))

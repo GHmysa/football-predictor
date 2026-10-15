@@ -85,3 +85,15 @@ def fit(matches: pd.DataFrame, ref_date: pd.Timestamp, xi: float) -> dict:
         "home_advantage": float(result.x[2 * n]),
         "rho": float(result.x[2 * n + 1]),
     }
+
+
+def predict(params: dict, home_team: str, away_team: str) -> tuple[float, float, float]:
+    attack, defence = params["attack"], params["defence"]
+    # Équipe sans historique (promue) : paramètres moyens. Les attaques sont centrées sur 0,
+    # mais pas les défenses (leur moyenne porte le niveau de buts de la ligue).
+    mean_defence = np.mean(list(defence.values()))
+    lam = np.exp(
+        attack.get(home_team, 0.0) + defence.get(away_team, mean_defence) + params["home_advantage"]
+    )
+    mu = np.exp(attack.get(away_team, 0.0) + defence.get(home_team, mean_defence))
+    return outcome_probs(score_matrix(lam, mu, params["rho"]))
